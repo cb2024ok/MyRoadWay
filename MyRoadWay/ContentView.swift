@@ -26,7 +26,7 @@
     struct ContentView: View {
         @State private var selectedItems: [PhotosPickerItem] = []
         @State private var travelPhotos: [TravelPhoto] = []
-        @State private var viewMode: ViewMode = .scene3D
+        @State private var viewMode: ViewMode = .map2D
         @State private var isProcessing: Bool = false
         
         // 드라이브 시뮬레이션 제어 상태
@@ -35,8 +35,8 @@
         @State private var driveSpeed: Float = 1.0
         
         enum ViewMode: String, CaseIterable {
-            case scene3D = "3D 입체 맵"
             case map2D = "2D 지도"
+            case scene3D = "3D 입체 맵"
         }
         
         var body: some View {
