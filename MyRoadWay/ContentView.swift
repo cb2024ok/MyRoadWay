@@ -33,6 +33,7 @@
         @State private var isDriving: Bool = false
         @State private var isChaseCam: Bool = true
         @State private var driveSpeed: Float = 1.0
+        @State private var processingID = UUID()
         
         enum ViewMode: String, CaseIterable {
             case map2D = "2D 지도"
@@ -83,6 +84,7 @@
                                     isChaseCam: $isChaseCam,
                                     driveSpeed: driveSpeed
                                 )
+                                .id(travelPhotos.map(\.id))
                             } else {
                                 Map2DView(photos: travelPhotos)
                             }
@@ -174,43 +176,74 @@
                     
                     if isProcessing {
                         Color.black.opacity(0.6).ignoresSafeArea()
-                        ProgressView("여행 궤적 및 3D 도로 정밀 재구성 중...")
+                        ProgressView("사진 위치를 분석하고 여행 경로를 만드는 중...")
                             .tint(.white)
                             .foregroundColor(.white)
                     }
                 }
                 .navigationBarHidden(true)
-                .onChange(of: selectedItems) { newItems in
-                    guard !newItems.isEmpty else { return }
-                    processSelectedPhotos(newItems)
+                // ios 17대응 FIX..
+                .onChange(of: selectedItems) {
+                       processSelectedPhotos(selectedItems)
+                }
+                .onChange(of: viewMode) { _, newMode in
+                    if newMode == .map2D {
+                        isDriving = false
+                    }
                 }
             }
         }
         
         // 사진 파싱 및 초경량 다운샘플링
+        @MainActor
         private func processSelectedPhotos(_ items: [PhotosPickerItem]) {
+            let requestID = UUID()
+            processingID = requestID
             isProcessing = true
-            Task {
+            isDriving = false
+
+            Task { @MainActor in
                 var extracted: [TravelPhoto] = []
-                
+
                 for item in items {
-                    if let data = try? await item.loadTransferable(type: Data.self) {
-                        // ⭐ [메모리 폭발 박멸]: 하드웨어 가속 800px 다운샘플링 + 회전 자동 보정!
-                        if let thumbnail = createOptimizedThumbnail(from: data, maxDimension: 800),
-                           let (coord, date) = extractEXIF(from: data) {
-                            extracted.append(TravelPhoto(image: thumbnail, coordinate: coord, date: date))
+                    guard processingID == requestID else { return }
+
+                    do {
+                        guard let data = try await item.loadTransferable(
+                            type: Data.self
+                        ) else {
+                            continue
                         }
+
+                        guard processingID == requestID else { return }
+
+                        // GPSがない写真は、画像生成前に除外
+                        guard let (coordinate, date) = extractEXIF(from: data),
+                              let thumbnail = createOptimizedThumbnail(
+                                from: data,
+                                maxDimension: 800
+                              ) else {
+                            continue
+                        }
+
+                        extracted.append(
+                            TravelPhoto(
+                                image: thumbnail,
+                                coordinate: coordinate,
+                                date: date
+                            )
+                        )
+                    } catch {
+                        // 추후 실패 건수가 나타나는 부분에 연동
+                        continue
                     }
                 }
-                
-                extracted.sort(by: { $0.date < $1.date })
-                let normalized = calculate3DCoordinates(for: extracted)
-                
-                await MainActor.run {
-                    self.travelPhotos = normalized
-                    self.isDriving = false
-                    self.isProcessing = false
-                }
+
+                guard processingID == requestID else { return }
+
+                extracted.sort { $0.date < $1.date }
+                travelPhotos = calculate3DCoordinates(for: extracted)
+                isProcessing = false
             }
         }
         
@@ -253,13 +286,17 @@
             if let exif = properties[kCGImagePropertyExifDictionary] as? [CFString: Any],
                let dateString = exif[kCGImagePropertyExifDateTimeOriginal] as? String {
                 let formatter = DateFormatter()
+                formatter.locale = Locale(identifier: "en_US_POSIX")
                 formatter.dateFormat = "yyyy:MM:dd HH:mm:ss"
                 if let parsedDate = formatter.date(from: dateString) {
                     date = parsedDate
                 }
             }
             
-            guard let finalCoord = coordinate else { return nil }
+            guard let finalCoord = coordinate,
+                  CLLocationCoordinate2DIsValid(finalCoord) else {
+                return nil
+            }
             return (finalCoord, date)
         }
         
@@ -312,7 +349,7 @@
         func makeUIView(context: Context) -> SCNView {
             let scnView = SCNView()
             scnView.backgroundColor = UIColor(red: 0.04, green: 0.04, blue: 0.08, alpha: 1.0)
-            scnView.allowsCameraControl = true
+            scnView.allowsCameraControl = !isChaseCam
             scnView.autoenablesDefaultLighting = false
             scnView.delegate = context.coordinator
             
@@ -329,6 +366,7 @@
             cameraNode.eulerAngles = SCNVector3(-0.65, 0, 0)
             scene.rootNode.addChildNode(cameraNode)
             context.coordinator.cameraNode = cameraNode
+            scnView.pointOfView = cameraNode
             
             // 조명 시스템
             let lightNode = SCNNode()
@@ -359,9 +397,19 @@
         }
         
         func updateUIView(_ uiView: SCNView, context: Context) {
-            context.coordinator.isDriving = isDriving
-            context.coordinator.isChaseCam = isChaseCam
-            context.coordinator.driveSpeed = driveSpeed
+            let coordinator = context.coordinator
+
+            coordinator.isDriving = isDriving
+            coordinator.isChaseCam = isChaseCam
+            coordinator.driveSpeed = driveSpeed
+
+            uiView.allowsCameraControl = !isChaseCam
+
+            if isChaseCam,
+               let camera = coordinator.cameraNode,
+               uiView.pointOfView !== camera {
+                uiView.pointOfView = camera
+            }
         }
         
         func makeCoordinator() -> Coordinator {
@@ -384,67 +432,146 @@
             
             var currentProgress: Float = 0.0
             private var lastTime: TimeInterval = 0
+            // 삭제노드 별도관리..
+            private let worldRoot = SCNNode()
             
             func setupWorld(with photos: [TravelPhoto]) {
-                guard let scene = scene, !photos.isEmpty else { return }
-                
-                scene.rootNode.enumerateChildNodes { (node, _) in
-                    if node != cameraNode && node.light == nil && !(node.geometry is SCNFloor) {
-                        node.removeFromParentNode()
-                    }
+                guard let scene = scene else { return }
+
+                // 여행 콘텐츠 전용 부모 노드 연결
+                if worldRoot.parent == nil {
+                    scene.rootNode.addChildNode(worldRoot)
                 }
-                
-                self.waypoints = photos.map { SCNVector3($0.local3DPosition.x, 0.05, $0.local3DPosition.z) }
-                self.photoNodes.removeAll()
-                
-                var prevGroundPos: SCNVector3? = nil
-                
+
+                // 이전 여행 콘텐츠만 제거
+                for child in worldRoot.childNodes {
+                    child.removeFromParentNode()
+                }
+
+                // 이전 상태 초기화
+                waypoints.removeAll()
+                photoNodes.removeAll()
+                carNode = nil
+                currentProgress = 0
+                lastTime = 0
+
+                guard !photos.isEmpty else { return }
+
+                /*waypoints = photos.map {
+                    SCNVector3(
+                        $0.local3DPosition.x,
+                        0.05,
+                        $0.local3DPosition.z
+                    )
+                }*/
+                for photo in photos {
+                    let point = SCNVector3(
+                        photo.local3DPosition.x,
+                        0.05,
+                        photo.local3DPosition.z
+                    )
+
+                    if let previous = waypoints.last {
+                        let dx = point.x - previous.x
+                        let dz = point.z - previous.z
+
+                        if dx * dx + dz * dz <= 0.0001 * 0.0001 {
+                            continue
+                        }
+                    }
+
+                    waypoints.append(point)
+                }
+
+                var prevGroundPos: SCNVector3?
+
                 for (index, item) in photos.enumerated() {
                     let pos = item.local3DPosition
                     let groundPos = SCNVector3(pos.x, 0, pos.z)
-                    
-                    let cardNode = createBillboardThumbnailNode(image: item.image, index: index + 1)
+
+                    // 사진 카드
+                    let cardNode = createBillboardThumbnailNode(
+                        image: item.image,
+                        index: index + 1
+                    )
                     cardNode.position = pos
-                    scene.rootNode.addChildNode(cardNode)
+                    worldRoot.addChildNode(cardNode)
                     photoNodes.append(cardNode)
-                    
-                    let ringGeo = SCNTorus(ringRadius: 0.45, pipeRadius: 0.025)
+
+                    // 위치 링
+                    let ringGeo = SCNTorus(
+                        ringRadius: 0.45,
+                        pipeRadius: 0.025
+                    )
                     ringGeo.firstMaterial?.diffuse.contents = UIColor.cyan
-                    ringGeo.firstMaterial?.emission.contents = UIColor.cyan.withAlphaComponent(0.6)
+                    ringGeo.firstMaterial?.emission.contents =
+                        UIColor.cyan.withAlphaComponent(0.6)
+
                     let ringNode = SCNNode(geometry: ringGeo)
                     ringNode.position = groundPos
-                    scene.rootNode.addChildNode(ringNode)
-                    
-                    let pinLine = SCNCylinder(radius: 0.035, height: CGFloat(pos.y))
-                    pinLine.firstMaterial?.diffuse.contents = UIColor.cyan.withAlphaComponent(0.8)
+                    worldRoot.addChildNode(ringNode)
+
+                    // 사진과 지면을 연결하는 기둥
+                    let pinLine = SCNCylinder(
+                        radius: 0.035,
+                        height: CGFloat(pos.y)
+                    )
+                    pinLine.firstMaterial?.diffuse.contents =
+                        UIColor.cyan.withAlphaComponent(0.8)
+
                     let pinNode = SCNNode(geometry: pinLine)
-                    pinNode.position = SCNVector3(pos.x, pos.y / 2.0, pos.z)
-                    scene.rootNode.addChildNode(pinNode)
-                    
+                    pinNode.position = SCNVector3(
+                        pos.x,
+                        pos.y / 2,
+                        pos.z
+                    )
+                    worldRoot.addChildNode(pinNode)
+
+                    // 같은 좌표의 구간은 도로 생성을 생략
                     if let prev = prevGroundPos {
-                        let routeLine = createRouteCylinder(from: prev, to: groundPos)
-                        scene.rootNode.addChildNode(routeLine)
+                        let dx = groundPos.x - prev.x
+                        let dz = groundPos.z - prev.z
+                        let distanceSquared = dx * dx + dz * dz
+
+                        if distanceSquared > 0.0001 * 0.0001 {
+                            let routeLine = createRouteCylinder(
+                                from: prev,
+                                to: groundPos
+                            )
+                            worldRoot.addChildNode(routeLine)
+                        }
                     }
+
                     prevGroundPos = groundPos
                 }
-                
+
+                // 차량
                 let car = createCyberCarNode()
+
                 if let first = waypoints.first {
-                    car.position = first
+                    car.position = SCNVector3(first.x, 0.12, first.z)
                 }
-                scene.rootNode.addChildNode(car)
-                self.carNode = car
-                self.currentProgress = 0.0
-                self.lastTime = 0
+
+                worldRoot.addChildNode(car)
+                carNode = car
             }
             
             // 렌더링 프레임 루프 (60/120fps)
             func renderer(_ renderer: SCNSceneRenderer, updateAtTime time: TimeInterval) {
-                guard isDriving, waypoints.count >= 2, let car = carNode, let camera = cameraNode else { return }
-                
-                if lastTime == 0 { lastTime = time }
-                var dt = Float(time - lastTime)
-                if dt > 0.1 { dt = 0.016 } // 일시정지 후 복귀 시 순간 튐 방지
+                guard isDriving,
+                      waypoints.count >= 2,
+                      let car = carNode,
+                      let camera = cameraNode else {
+                    lastTime = 0
+                    return
+                }
+
+                guard lastTime != 0 else {
+                    lastTime = time
+                    return
+                }
+
+                let dt = Float(min(max(time - lastTime, 0), 0.1))
                 lastTime = time
                 
                 let totalSegments = Float(waypoints.count - 1)
@@ -484,11 +611,12 @@
                     let targetCamY = carY + followHeight
                     
                     let targetCamPos = SCNVector3(targetCamX, targetCamY, targetCamZ)
+                    let alpha: Float = 1 - exp(-8 * dt)
                     
                     camera.position = SCNVector3(
-                        camera.position.x + (targetCamPos.x - camera.position.x) * 0.12,
-                        camera.position.y + (targetCamPos.y - camera.position.y) * 0.12,
-                        camera.position.z + (targetCamPos.z - camera.position.z) * 0.12
+                        camera.position.x + (targetCamPos.x - camera.position.x) * alpha,
+                        camera.position.y + (targetCamPos.y - camera.position.y) * alpha,
+                        camera.position.z + (targetCamPos.z - camera.position.z) * alpha
                     )
                     
                     let lookTarget = SCNVector3(carX + sin(heading) * 1.5, carY + 0.6, carZ + cos(heading) * 1.5)
