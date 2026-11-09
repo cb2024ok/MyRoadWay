@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Bucket
+   uuid = "9506C69F-9594-436C-8FCC-F7D6753C303B"
+   type = "1"
+   version = "2.0">
+   <Breakpoints>
+      <BreakpointProxy
+         BreakpointExtensionID = "Xcode.Breakpoint.FileBreakpoint">
+         <BreakpointContent
+            uuid = "DFFE37F2-D169-4652-B6FA-E9ACDF82AE66"
+            shouldBeEnabled = "Yes"
+            ignoreCount = "0"
+            continueAfterRunningActions = "No"
+            filePath = "../../../../var/folders/_b/xhxzfvm16x97bmj96y9nk8mh0000gn/T/swift-generated-sources/@__swiftmacro_9MyRoadWay0022ContentViewswift_tiAIefMX762_55_33_2A6874470985F45FD5837EEB259D1A3ELl9PredicatefMf_.swift"
+            startingColumnNumber = "9223372036854775807"
+            endingColumnNumber = "9223372036854775807"
+            startingLineNumber = "1"
+            endingLineNumber = "1"
+            landmarkName = "body"
+            landmarkType = "37">
+         </BreakpointContent>
+      </BreakpointProxy>
+   </Breakpoints>
+</Bucket>

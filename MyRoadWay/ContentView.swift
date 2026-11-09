@@ -12,6 +12,7 @@
     import ImageIO
     import CoreLocation
     import simd
+    import SwiftData
 
     // MARK: - 1. 여행 사진 데이터 모델
     struct TravelPhoto: Identifiable {
@@ -20,6 +21,9 @@
         let coordinate: CLLocationCoordinate2D
         let date: Date
         var local3DPosition: SCNVector3 = SCNVector3Zero
+        
+        var memo: String = "" // 여행 메모기능을 위한 준비
+        
     }
 
     // MARK: - 2. 메인 뷰 (My Road Way)
@@ -86,7 +90,7 @@
                                 )
                                 .id(travelPhotos.map(\.id))
                             } else {
-                                Map2DView(photos: travelPhotos)
+                                Map2DView(photos: $travelPhotos)
                             }
                         }
                         .ignoresSafeArea(edges: .bottom)
@@ -733,26 +737,94 @@
 
     // MARK: - 4. 2D MapKit 뷰
     struct Map2DView: View {
-        let photos: [TravelPhoto]
+        @Environment(\.modelContext) private var modelContext
+        
+        @Binding var photos: [TravelPhoto]
         @State private var position: MapCameraPosition = .automatic
+        
+        // 현재 어떤 마커가 선택되었나 구분
+        @State private var selectedPhotoID: UUID? = nil
+        
+        // 여행메모 제어를 위한 변수 선언..
+        @State private var editingSpot: TravelSpot? = nil
         
         var body: some View {
             Map(position: $position) {
-                ForEach(Array(photos.enumerated()), id: \.element.id) { index, photo in
+                ForEach(Array(photos.enumerated()), id: \.element.id) {
+ index,
+ photo in
                     Annotation("스팟 \(index + 1)", coordinate: photo.coordinate) {
-                        ZStack {
-                            RoundedRectangle(cornerRadius: 8)
-                                .fill(Color.white)
-                                .frame(width: 44, height: 50)
-                                .shadow(radius: 4)
+                        
+                        VStack(spacing: 8) {
                             
-                            Image(uiImage: photo.image)
-                                .resizable()
-                                .scaledToFill()
-                                .frame(width: 38, height: 38)
-                                .clipped()
-                                .cornerRadius(6)
-                                .offset(y: -3)
+                            if selectedPhotoID == photo.id {
+                                    Button {
+                                        print("\(index + 1)번 메모 입력장 열기")
+                                        
+                                        let targetDate = photo.date
+                                        
+                                            // 1.현재 사진과 일치하는 TravelSpot을 SwiftData에서 찾기
+                                        let fetchDescriptor = FetchDescriptor<TravelSpot>(
+                                            predicate: #Predicate {
+                                                $0.takenAt == targetDate
+                                            }
+                                        )
+                                        
+                                        if let spot = try? modelContext.fetch(fetchDescriptor).first {
+                                            editingSpot = spot
+                                        } else {
+                                            
+                                            let newSpot = TravelSpot(
+                                                id: UUID(),
+                                                createdAt: Date(),
+                                                latitude: photo.coordinate.latitude,
+                                                longitude: photo.coordinate.longitude,
+                                                takenAt: photo.date,
+                                                memo: "",
+                                                imageFileName: ""
+                                            )
+                                            modelContext.insert(newSpot)
+                                            editingSpot = newSpot
+                                        }
+                                        
+                                    } label: {
+                                        Text("여행메모 📝")
+                                            .font(.caption)
+                                            .fontWeight(.bold)
+                                            .padding(.horizontal, 10)
+                                            .padding(.vertical, 6)
+                                            .background(Color.blue)
+                                            .foregroundColor(.white)
+                                            .clipShape(Capsule())
+                                            .shadow(radius: 3)
+                                    }
+                            }
+                            
+                            ZStack
+                            {
+                                RoundedRectangle(cornerRadius: 8)
+                                    .fill(Color.white)
+                                    .frame(width: 44, height: 50)
+                                    .shadow(radius: 4)
+                                
+                                Image(uiImage: photo.image)
+                                    .resizable()
+                                    .scaledToFill()
+                                    .frame(width: 38, height: 38)
+                                    .clipped()
+                                    .cornerRadius(6)
+                                    .offset(y: -3)
+                            }.onTapGesture {
+                                // MARK: 여행메모 기능추가..
+                                withAnimation(.spring()) {
+                                    if selectedPhotoID == photo.id {
+                                        selectedPhotoID = nil
+                                    } else {
+                                        selectedPhotoID = photo.id
+                                    }
+                                }
+                                
+                            }
                         }
                     }
                 }
@@ -760,8 +832,69 @@
                     .stroke(Color.cyan, lineWidth: 3)
             }
             .mapStyle(.hybrid(elevation: .realistic))
+            .sheet(item: $editingSpot) { spot in
+                MemoEditorView(spot: spot) { updatedText in
+                        // 해당 메모의 변수에 수정한 텍스트를 대입...
+                        spot.memo = updatedText
+                        try? modelContext.save()
+                        editingSpot = nil
+                }
+            }
         }
     }
+
+    
+    // MARK: - 여행 메모 입력뷰-
+    struct MemoEditorView: View {
+        let spot: TravelSpot //TravelPhoto
+
+        @State private var memoText: String = ""
+        
+        // 부모뷰에게 전달할 Closure...
+        var onSave: (String) -> Void
+        
+        var body: some View {
+            
+            VStack(spacing: 20) {
+                
+                Text("📝 \(spot.memo.isEmpty ? "여행메모 작성": "여행메모 수정") ")
+                    .font(.headline)
+                
+                Text("스팟 정보: \(spot.takenAt.formatted())에 촬영됨")
+                    .font(.subheadline)
+                    .foregroundColor(.gray)
+                
+                // 에디터 구현 부분
+                TextEditor(text: $memoText)
+                    .frame(height: 150)
+                    .padding(4)
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 8)
+                            .stroke(Color.gray.opacity(0.5),lineWidth: 1 )
+                    }
+                
+                // 저장기능 구현..
+                Button {
+                    onSave(memoText)
+                } label: {
+                    Text("저장하기")
+                        .fontWeight(.bold)
+                        .frame(maxWidth: .infinity)
+                        .padding()
+                        .background(Color.blue)
+                        .foregroundColor(.white)
+                        .cornerRadius(10)
+                }
+                Spacer()
+            }
+            .padding()
+            .onAppear {
+                memoText = spot.memo
+            }
+            
+        }
+    }
+
 
     #Preview {
         ContentView()
