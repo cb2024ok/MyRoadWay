@@ -16,18 +16,34 @@
 
     // MARK: - 1. 여행 사진 데이터 모델
     struct TravelPhoto: Identifiable {
-        let id = UUID()
+        let id: UUID
         let image: UIImage
         let coordinate: CLLocationCoordinate2D
         let date: Date
         var local3DPosition: SCNVector3 = SCNVector3Zero
+        var memo: String = ""
         
-        var memo: String = "" // 여행 메모기능을 위한 준비
-        
+        init(
+            id: UUID = UUID(),
+            image: UIImage,
+            coordinate: CLLocationCoordinate2D,
+            date: Date,
+            local3DPosition: SCNVector3 = SCNVector3Zero,
+            memo: String = ""
+        ) {
+            self.id = id
+            self.image = image
+            self.coordinate = coordinate
+            self.date = date
+            self.local3DPosition = local3DPosition
+            self.memo = memo
+        }
     }
 
     // MARK: - 2. 메인 뷰 (My Road Way)
     struct ContentView: View {
+        @Environment(\.modelContext) private var modelContext
+        
         @State private var selectedItems: [PhotosPickerItem] = []
         @State private var travelPhotos: [TravelPhoto] = []
         @State private var viewMode: ViewMode = .map2D
@@ -188,19 +204,54 @@
                 .navigationBarHidden(true)
                 // ios 17대응 FIX..
                 .onChange(of: selectedItems) {
-                       processSelectedPhotos(selectedItems)
+                    processSelectedPhotos(selectedItems)
                 }
                 .onChange(of: viewMode) { _, newMode in
                     if newMode == .map2D {
                         isDriving = false
                     }
                 }
+                .task {
+                    loadSavedSpots()
+                }
             }
         }
         
-        // 사진 파싱 및 초경량 다운샘플링
+        // MARK: - 저장된 여행 데이터 불러오기 (앱 시작 시 자동 로드)
+        @MainActor
+        private func loadSavedSpots() {
+            guard travelPhotos.isEmpty, !isProcessing else { return }
+            
+            let descriptor = FetchDescriptor<TravelSpot>(
+                sortBy: [SortDescriptor(\.takenAt, order: .forward)]
+            )
+            guard let savedSpots = try? modelContext.fetch(descriptor), !savedSpots.isEmpty else { return }
+            
+            var loaded: [TravelPhoto] = []
+            for spot in savedSpots {
+                if let image = ImageFileManager.loadImage(fileName: spot.imageFileName) {
+                    loaded.append(
+                        TravelPhoto(
+                            id: spot.id,
+                            image: image,
+                            coordinate: spot.coordinate,
+                            date: spot.takenAt,
+                            memo: spot.memo
+                        )
+                    )
+                }
+            }
+            
+            if !loaded.isEmpty {
+                travelPhotos = calculate3DCoordinates(for: loaded)
+            }
+        }
+        
+        // 사진 파싱 및 초경량 다운샘플링 + 로컬 저장 및 SwiftData 엔티티 생성
         @MainActor
         private func processSelectedPhotos(_ items: [PhotosPickerItem]) {
+            guard !items.isEmpty else { return }
+            
             let requestID = UUID()
             processingID = requestID
             isProcessing = true
@@ -208,6 +259,7 @@
 
             Task { @MainActor in
                 var extracted: [TravelPhoto] = []
+                var spotsToInsert: [TravelSpot] = []
 
                 for item in items {
                     guard processingID == requestID else { return }
@@ -221,7 +273,7 @@
 
                         guard processingID == requestID else { return }
 
-                        // GPSがない写真は、画像生成前に除外
+                        // GPS가 없는 사진은 제외
                         guard let (coordinate, date) = extractEXIF(from: data),
                               let thumbnail = createOptimizedThumbnail(
                                 from: data,
@@ -230,20 +282,56 @@
                             continue
                         }
 
+                        let spotID = UUID()
+                        let fileName = "\(spotID.uuidString).jpg"
+
+                        // 1. 디스크에 썸네일 이미지 파일 저장
+                        try ImageFileManager.saveImage(thumbnail, fileName: fileName)
+
+                        // 2. SwiftData TravelSpot 모델 준비
+                        let spot = TravelSpot(
+                            id: spotID,
+                            createdAt: Date(),
+                            latitude: coordinate.latitude,
+                            longitude: coordinate.longitude,
+                            takenAt: date,
+                            memo: "",
+                            imageFileName: fileName
+                        )
+                        spotsToInsert.append(spot)
+
+                        // 3. UI 표시용 TravelPhoto 모델 준비 (동일한 spotID 사용)
                         extracted.append(
                             TravelPhoto(
+                                id: spotID,
                                 image: thumbnail,
                                 coordinate: coordinate,
-                                date: date
+                                date: date,
+                                memo: ""
                             )
                         )
                     } catch {
-                        // 추후 실패 건수가 나타나는 부분에 연동
+                        // 개별 사진 저장 실패 시 스킵
                         continue
                     }
                 }
 
                 guard processingID == requestID else { return }
+
+                if !spotsToInsert.isEmpty {
+                    // 이전 스팟 및 이미지 정리 (새 여행 코스로 대체)
+                    let oldSpots = (try? modelContext.fetch(FetchDescriptor<TravelSpot>())) ?? []
+                    for oldSpot in oldSpots {
+                        ImageFileManager.deleteImage(fileName: oldSpot.imageFileName)
+                        modelContext.delete(oldSpot)
+                    }
+
+                    // 새 스팟 저장
+                    for spot in spotsToInsert {
+                        modelContext.insert(spot)
+                    }
+                    try? modelContext.save()
+                }
 
                 extracted.sort { $0.date < $1.date }
                 travelPhotos = calculate3DCoordinates(for: extracted)
@@ -759,29 +847,28 @@
                             
                             if selectedPhotoID == photo.id {
                                     Button {
-                                        print("\(index + 1)번 메모 입력장 열기")
+                                        print("\(index + 1)번 메모 입력창 열기")
                                         
-                                        let targetDate = photo.date
+                                        let targetID = photo.id
                                         
-                                            // 1.현재 사진과 일치하는 TravelSpot을 SwiftData에서 찾기
+                                        // 1. 고유 UUID로 일치하는 TravelSpot 찾기 (동일한 초에 찍힌 사진도 완벽 분리)
                                         let fetchDescriptor = FetchDescriptor<TravelSpot>(
                                             predicate: #Predicate {
-                                                $0.takenAt == targetDate
+                                                $0.id == targetID
                                             }
                                         )
                                         
                                         if let spot = try? modelContext.fetch(fetchDescriptor).first {
                                             editingSpot = spot
                                         } else {
-                                            
                                             let newSpot = TravelSpot(
-                                                id: UUID(),
+                                                id: photo.id,
                                                 createdAt: Date(),
                                                 latitude: photo.coordinate.latitude,
                                                 longitude: photo.coordinate.longitude,
                                                 takenAt: photo.date,
-                                                memo: "",
-                                                imageFileName: ""
+                                                memo: photo.memo,
+                                                imageFileName: "\(photo.id.uuidString).jpg"
                                             )
                                             modelContext.insert(newSpot)
                                             editingSpot = newSpot
@@ -834,64 +921,93 @@
             .mapStyle(.hybrid(elevation: .realistic))
             .sheet(item: $editingSpot) { spot in
                 MemoEditorView(spot: spot) { updatedText in
-                        // 해당 메모의 변수에 수정한 텍스트를 대입...
-                        spot.memo = updatedText
-                        try? modelContext.save()
-                        editingSpot = nil
+                    // TravelPhoto 배열의 메모도 동기화
+                    if let idx = photos.firstIndex(where: { $0.id == spot.id }) {
+                        photos[idx].memo = updatedText
+                    }
+                    editingSpot = nil
                 }
             }
         }
     }
 
     
-    // MARK: - 여행 메모 입력뷰-
+    // MARK: - 5. 여행 메모 입력뷰
     struct MemoEditorView: View {
-        let spot: TravelSpot //TravelPhoto
+        @Environment(\.dismiss) private var dismiss
+        @Environment(\.modelContext) private var modelContext
+        
+        let spot: TravelSpot
 
         @State private var memoText: String = ""
+        @State private var showErrorAlert: Bool = false
+        @State private var errorMessage: String = ""
         
-        // 부모뷰에게 전달할 Closure...
+        // 부모뷰에게 성공 전달할 Closure
         var onSave: (String) -> Void
         
         var body: some View {
-            
-            VStack(spacing: 20) {
-                
-                Text("📝 \(spot.memo.isEmpty ? "여행메모 작성": "여행메모 수정") ")
-                    .font(.headline)
-                
-                Text("스팟 정보: \(spot.takenAt.formatted())에 촬영됨")
-                    .font(.subheadline)
-                    .foregroundColor(.gray)
-                
-                // 에디터 구현 부분
-                TextEditor(text: $memoText)
-                    .frame(height: 150)
-                    .padding(4)
-                    .overlay {
-                        RoundedRectangle(cornerRadius: 8)
-                            .stroke(Color.gray.opacity(0.5),lineWidth: 1 )
+            NavigationStack {
+                VStack(spacing: 20) {
+                    Text("스팟 정보: \(spot.takenAt.formatted())에 촬영됨")
+                        .font(.subheadline)
+                        .foregroundColor(.gray)
+                    
+                    // 에디터 구현 부분
+                    TextEditor(text: $memoText)
+                        .frame(height: 150)
+                        .padding(8)
+                        .overlay {
+                            RoundedRectangle(cornerRadius: 8)
+                                .stroke(Color.gray.opacity(0.5), lineWidth: 1)
+                        }
+                    
+                    // 저장기능 구현
+                    Button {
+                        saveMemo()
+                    } label: {
+                        Text("저장하기")
+                            .fontWeight(.bold)
+                            .frame(maxWidth: .infinity)
+                            .padding()
+                            .background(Color.blue)
+                            .foregroundColor(.white)
+                            .cornerRadius(10)
                     }
-                
-                // 저장기능 구현..
-                Button {
-                    onSave(memoText)
-                } label: {
-                    Text("저장하기")
-                        .fontWeight(.bold)
-                        .frame(maxWidth: .infinity)
-                        .padding()
-                        .background(Color.blue)
-                        .foregroundColor(.white)
-                        .cornerRadius(10)
+                    Spacer()
                 }
-                Spacer()
+                .padding()
+                .navigationTitle(spot.memo.isEmpty ? "여행메모 작성" : "여행메모 수정")
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement: .cancellationAction) {
+                        Button("닫기") {
+                            dismiss()
+                        }
+                    }
+                }
+                .onAppear {
+                    memoText = spot.memo
+                }
+                .alert("메모 저장 실패", isPresented: $showErrorAlert) {
+                    Button("확인", role: .cancel) { }
+                } message: {
+                    Text(errorMessage.isEmpty ? "메모를 저장하지 못했습니다. 입력하신 내용은 유지되니 다시 시도해 주세요." : errorMessage)
+                }
             }
-            .padding()
-            .onAppear {
-                memoText = spot.memo
+        }
+        
+        private func saveMemo() {
+            spot.memo = memoText
+            do {
+                try modelContext.save()
+                onSave(memoText)
+                dismiss()
+            } catch {
+                errorMessage = "저장 중 오류가 발생했습니다: \(error.localizedDescription)\n입력하신 내용은 유지됩니다."
+                showErrorAlert = true
+                // 실패 시 dismiss()하지 않고 입력 내용(memoText) 유지
             }
-            
         }
     }
 
