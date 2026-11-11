@@ -48,6 +48,7 @@
         @State private var travelPhotos: [TravelPhoto] = []
         @State private var viewMode: ViewMode = .map2D
         @State private var isProcessing: Bool = false
+        @State private var currentTravel: Travel? //  추가된 부분...
         
         // 드라이브 시뮬레이션 제어 상태
         @State private var isDriving: Bool = false
@@ -106,7 +107,7 @@
                                 )
                                 .id(travelPhotos.map(\.id))
                             } else {
-                                Map2DView(photos: $travelPhotos)
+                                Map2DView(photos: $travelPhotos, currentTravel: $currentTravel)
                             }
                         }
                         .ignoresSafeArea(edges: .bottom)
@@ -225,10 +226,15 @@
             let descriptor = FetchDescriptor<TravelSpot>(
                 sortBy: [SortDescriptor(\.takenAt, order: .forward)]
             )
-            guard let savedSpots = try? modelContext.fetch(descriptor), !savedSpots.isEmpty else { return }
+             guard let latestTravel = try? modelContext.fetch(descriptor).first else { return }
+            currentTravel = latestTravel  // ✅ currentTravel 복원
+            let spots = latestTravel.travelSpots.sorted { $0.takenAt < $1.takenAt }
+            guard !spots.isEmpty else { return }
+
+            //guard let savedSpots = try? modelContext.fetch(descriptor), !savedSpots.isEmpty else { return }
             
             var loaded: [TravelPhoto] = []
-            for spot in savedSpots {
+            for spot in spots {
                 if let image = ImageFileManager.loadImage(fileName: spot.imageFileName) {
                     loaded.append(
                         TravelPhoto(
@@ -326,8 +332,18 @@
                         modelContext.delete(oldSpot)
                     }
 
+                     // ✅ 새 Travel 먼저 생성
+                    let newTravel = Travel(
+                        title: "여행 \(Date().formatted(date: .abbreviated, time: .omitted))",
+                        coverImageName: spotsToInsert.first?.imageFileName ?? ""
+                    )
+                    modelContext.insert(newTravel)
+                    currentTravel = newTravel  // ✅ State 업데이트
+
                     // 새 스팟 저장
                     for spot in spotsToInsert {
+                        spot.travel = newTravel
+                        newTravel.travelSpots.append(spot)
                         modelContext.insert(spot)
                     }
                     try? modelContext.save()
@@ -828,6 +844,7 @@
         @Environment(\.modelContext) private var modelContext
         
         @Binding var photos: [TravelPhoto]
+        @Binding var currentTravel: Travel? // 추가된 부분 ... 
         @State private var position: MapCameraPosition = .automatic
         
         // 현재 어떤 마커가 선택되었나 구분
@@ -871,6 +888,7 @@
                                                 imageFileName: "\(photo.id.uuidString).jpg"
                                             )
                                             modelContext.insert(newSpot)
+                                            currentTravel?.travelSpots.append(newSpot) // 양방향 관계 생성...
                                             editingSpot = newSpot
                                         }
                                         

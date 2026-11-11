@@ -14,6 +14,6 @@ struct MyRoadWayApp: App {
         WindowGroup {
             ContentView()
         }
-        .modelContainer(for: TravelSpot.self)
+        .modelContainer(for: [Travel.self, TravelSpot.self])
     }
 }
