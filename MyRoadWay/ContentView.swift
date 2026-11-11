@@ -48,7 +48,7 @@
         @State private var travelPhotos: [TravelPhoto] = []
         @State private var viewMode: ViewMode = .map2D
         @State private var isProcessing: Bool = false
-        @State private var currentTravel: Travel? //  추가된 부분...
+        @State var currentTravel: Travel? //  추가된 부분...
         
         // 드라이브 시뮬레이션 제어 상태
         @State private var isDriving: Bool = false
@@ -223,15 +223,14 @@
         private func loadSavedSpots() {
             guard travelPhotos.isEmpty, !isProcessing else { return }
             
-            let descriptor = FetchDescriptor<TravelSpot>(
-                sortBy: [SortDescriptor(\.takenAt, order: .forward)]
+            let descriptor = FetchDescriptor<Travel>(
+                sortBy: [SortDescriptor(\.createdAt, order: .reverse)]
             )
              guard let latestTravel = try? modelContext.fetch(descriptor).first else { return }
             currentTravel = latestTravel  // ✅ currentTravel 복원
             let spots = latestTravel.travelSpots.sorted { $0.takenAt < $1.takenAt }
             guard !spots.isEmpty else { return }
-
-            //guard let savedSpots = try? modelContext.fetch(descriptor), !savedSpots.isEmpty else { return }
+            //guard let spots = spots, !spots.isEmpty else { return }
             
             var loaded: [TravelPhoto] = []
             for spot in spots {
@@ -326,14 +325,14 @@
 
                 if !spotsToInsert.isEmpty {
                     // 1. 기존 Travel 데이터 전체 삭제 (하위 Spot들은 .cascade 규칙에 의해 자동 삭제됨)
-                    let oldTravels = (try? modelContext.fetch(FetchDescriptor<Travel>())) ?? []
+                    /*let oldTravels = (try? modelContext.fetch(FetchDescriptor<Travel>())) ?? []
                     for oldTravel in oldTravels {
                         // 하위 스팟들의 파일 먼저 삭제
                         for spot in oldTravel.travelSpots {
                             ImageFileManager.deleteImage(fileName: spot.imageFileName)
                         }
                         modelContext.delete(oldTravel)
-                    }
+                    }*/
                     
                     // 2. 새 Travel 생성 및 매핑
                     let newTravel = Travel(
@@ -715,10 +714,13 @@
                 // 2. 조향 회전
                 let dx = p1.x - p0.x
                 let dz = p1.z - p0.z
+                
+                // heading을 if문 밖에서 선언 (기본값으로 기존 각도나 0을 설정)
+                var heading: Float = car.eulerAngles.y
 
                 // 두스팟 거리가 너무 가깝지 않을때 회전각을 업데이트 처리
                 if abs(dx) > 0.005 || abs(dz) > 0.005 {
-                    let heading = atan2(dx, dz)
+                    heading = atan2(dx, dz)
                     car.eulerAngles = SCNVector3(0, heading, 0)
                 }
 

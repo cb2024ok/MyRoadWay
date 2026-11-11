@@ -12,7 +12,8 @@ import SwiftData
 struct MyRoadWayApp: App {
     var body: some Scene {
         WindowGroup {
-            ContentView()
+            //ContentView()
+            TravelView()
         }
         .modelContainer(for: [Travel.self, TravelSpot.self])
     }
