@@ -325,28 +325,37 @@
                 guard processingID == requestID else { return }
 
                 if !spotsToInsert.isEmpty {
-                    // 이전 스팟 및 이미지 정리 (새 여행 코스로 대체)
-                    let oldSpots = (try? modelContext.fetch(FetchDescriptor<TravelSpot>())) ?? []
-                    for oldSpot in oldSpots {
-                        ImageFileManager.deleteImage(fileName: oldSpot.imageFileName)
-                        modelContext.delete(oldSpot)
+                    // 1. 기존 Travel 데이터 전체 삭제 (하위 Spot들은 .cascade 규칙에 의해 자동 삭제됨)
+                    let oldTravels = (try? modelContext.fetch(FetchDescriptor<Travel>())) ?? []
+                    for oldTravel in oldTravels {
+                        // 하위 스팟들의 파일 먼저 삭제
+                        for spot in oldTravel.travelSpots {
+                            ImageFileManager.deleteImage(fileName: spot.imageFileName)
+                        }
+                        modelContext.delete(oldTravel)
                     }
-
-                     // ✅ 새 Travel 먼저 생성
+                    
+                    // 2. 새 Travel 생성 및 매핑
                     let newTravel = Travel(
                         title: "여행 \(Date().formatted(date: .abbreviated, time: .omitted))",
                         coverImageName: spotsToInsert.first?.imageFileName ?? ""
                     )
                     modelContext.insert(newTravel)
-                    currentTravel = newTravel  // ✅ State 업데이트
+                    currentTravel = newTravel
 
-                    // 새 스팟 저장
                     for spot in spotsToInsert {
-                        spot.travel = newTravel
-                        newTravel.travelSpots.append(spot)
-                        modelContext.insert(spot)
+                       // 1) 자식 엔티티를 컨텍스트에 명시적으로 등록 (필수!)
+                        modelContext.insert(spot) 
+                        
+                       // 2) 양방향 관계는 한쪽만 지정해 주면 SwiftData가 inverse를 통해 반대쪽도 자동 매핑합니다.
+                       spot.travel = newTravel 
                     }
-                    try? modelContext.save()
+
+                    do {
+                        try modelContext.save()
+                    } catch {
+                        print("SwiftData 저장 실패: \(error.localizedDescription)")
+                    }
                 }
 
                 extracted.sort { $0.date < $1.date }
@@ -706,9 +715,13 @@
                 // 2. 조향 회전
                 let dx = p1.x - p0.x
                 let dz = p1.z - p0.z
-                let heading = atan2(dx, dz)
-                car.eulerAngles = SCNVector3(0, heading, 0)
-                
+
+                // 두스팟 거리가 너무 가깝지 않을때 회전각을 업데이트 처리
+                if abs(dx) > 0.005 || abs(dz) > 0.005 {
+                    let heading = atan2(dx, dz)
+                    car.eulerAngles = SCNVector3(0, heading, 0)
+                }
+
                 // 3. 체이스캠 추종
                 if isChaseCam {
                     let followDistance: Float = 3.2
