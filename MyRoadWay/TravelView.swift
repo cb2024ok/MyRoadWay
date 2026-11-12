@@ -20,7 +20,6 @@ struct SpotInput {
 struct TravelView: View {
     @Environment(\.modelContext) private var context 
     @State private var currentTravel: Travel?
-    @State private var photos: [TravelPhoto] = []
 
     // 저장된 여행 목록을 Load..
     @Query(sort: \Travel.createdAt, order: .reverse) private var travels: [Travel]
@@ -51,25 +50,25 @@ struct TravelView: View {
                         }
                     }
                 }
+                .onDelete { deleteIdx in
+                    deleteTravels(at: deleteIdx)
+                }
             }
-            .onAppear(perform: {
-                cleanupEmptyTravels()
+            .navigationDestination(item: $currentTravel, destination: { travel in
+                ContentView(currentTravel: travel)
             })
             .navigationTitle("My Road Way")
         
         }
     }
     
-    // 스팟이 없는 빈 여행 데이터를 정리처리
-    private func cleanupEmptyTravels() {
-        for travel in travels {
-            if travel.travelSpots.isEmpty {
-                context.delete(travel)
-            }
+    private func deleteTravels(at offsets: IndexSet) {
+        for index in offsets {
+            let travel = travels[index]
+            context.delete(travel)
         }
         try? context.save()
     }
-    
     
     private func createNewTravel() {
         let travel = Travel(
@@ -82,38 +81,6 @@ struct TravelView: View {
         currentTravel = travel
     }
 
-
-    //
-    // MARK: saveTravel 
-    //
-   func saveTravel() {
-    guard let travel = currentTravel else { return }
-
-        for photo in photos {
-            
-            // 이미지 파일저장 처리
-            let fileName = UUID().uuidString + ".jpg"
-            try? ImageFileManager.saveImage(photo.image, fileName: fileName)
-            
-            let spot = TravelSpot(
-                createdAt: Date(),
-                latitude: photo.coordinate.latitude,
-                longitude: photo.coordinate.longitude,
-                takenAt: photo.date,
-                memo: photo.memo,
-                imageFileName: fileName
-            )
-            context.insert(spot)
-            travel.travelSpots.append(spot)
-        }
-
-        do {
-            try context.save()
-            print("저장 성공")
-        } catch {
-            print("저장 실패: \(error.localizedDescription)")
-        }
-    }
 
     func fetchTravels() -> [Travel] {
         let descriptor = FetchDescriptor<Travel>(

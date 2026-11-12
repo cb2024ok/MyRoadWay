@@ -57,6 +57,9 @@
         @State private var driveSpeed: Float = 1.0
         @State private var processingID = UUID()
         
+        // 사용하지 않음..
+        //@State private var photos: [TravelPhoto] = []
+        
         enum ViewMode: String, CaseIterable {
             case map2D = "2D 지도"
             case scene3D = "3D 입체 맵"
@@ -251,6 +254,39 @@
             dismiss()
         }
         
+        //
+        // MARK: saveTravel
+        //
+        /*func saveTravel() {
+            guard let travel = currentTravel else { return }
+
+                for photo in photos {
+                    
+                    // 이미지 파일저장 처리
+                    let fileName = UUID().uuidString + ".jpg"
+                    
+                    try? ImageFileManager.saveImage(photo.image, fileName: fileName)
+                    
+                    let spot = TravelSpot(
+                        createdAt: Date(),
+                        latitude: photo.coordinate.latitude,
+                        longitude: photo.coordinate.longitude,
+                        takenAt: photo.date,
+                        memo: photo.memo,
+                        imageFileName: fileName
+                    )
+                    modelContext.insert(spot)
+                    travel.travelSpots.append(spot)
+                }
+
+                do {
+                    try modelContext.save()
+                    print("저장 성공")
+                } catch {
+                    print("저장 실패: \(error.localizedDescription)")
+                }
+        }
+        */
         
         // MARK: - 저장된 여행 데이터 불러오기 (앱 시작 시 자동 로드)
         @MainActor
@@ -358,30 +394,27 @@
                 guard processingID == requestID else { return }
 
                 if !spotsToInsert.isEmpty {
-                    // 1. 기존 Travel 데이터 전체 삭제 (하위 Spot들은 .cascade 규칙에 의해 자동 삭제됨)
-                    /*let oldTravels = (try? modelContext.fetch(FetchDescriptor<Travel>())) ?? []
-                    for oldTravel in oldTravels {
-                        // 하위 스팟들의 파일 먼저 삭제
-                        for spot in oldTravel.travelSpots {
-                            ImageFileManager.deleteImage(fileName: spot.imageFileName)
-                        }
-                        modelContext.delete(oldTravel)
-                    }*/
                     
-                    // 2. 새 Travel 생성 및 매핑
-                    let newTravel = Travel(
-                        title: "여행 \(Date().formatted(date: .abbreviated, time: .omitted))",
-                        coverImageName: spotsToInsert.first?.imageFileName ?? ""
-                    )
-                    modelContext.insert(newTravel)
-                    currentTravel = newTravel
+                    // 기존 currentTravel이 있으면 사용, 없으면 생성
+                    let activeTravel: Travel
+                    if let existingTravel = currentTravel {
+                        activeTravel = existingTravel
+                        activeTravel.coverImageName = spotsToInsert.first?.imageFileName ?? ""
+                    } else {
+                        activeTravel = Travel(
+                            title: "여행 \(Date().formatted(date: .abbreviated, time: .omitted))",
+                            coverImageName: spotsToInsert.first?.imageFileName ?? ""
+                        )
+                        modelContext.insert(activeTravel)
+                        currentTravel = activeTravel
+                    }
 
                     for spot in spotsToInsert {
                        // 1) 자식 엔티티를 컨텍스트에 명시적으로 등록 (필수!)
                         modelContext.insert(spot) 
                         
                        // 2) 양방향 관계는 한쪽만 지정해 주면 SwiftData가 inverse를 통해 반대쪽도 자동 매핑합니다.
-                       spot.travel = newTravel 
+                        spot.travel = activeTravel
                     }
 
                     do {
