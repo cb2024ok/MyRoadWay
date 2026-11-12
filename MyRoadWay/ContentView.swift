@@ -43,6 +43,7 @@
     // MARK: - 2. 메인 뷰 (My Road Way)
     struct ContentView: View {
         @Environment(\.modelContext) private var modelContext
+        @Environment(\.dismiss) private var dismiss // dismiss 환경 define..
         
         @State private var selectedItems: [PhotosPickerItem] = []
         @State private var travelPhotos: [TravelPhoto] = []
@@ -133,6 +134,21 @@
                                         .padding(8)
                                         .background(.ultraThinMaterial, in: Circle())
                                 }
+                                
+                                // MARK: 홈으로 버튼 생성
+                                Button {
+                                    goHomeAction()
+                                } label: {
+                                    Image(systemName: "house.fill")
+                                        .foregroundColor(.white)
+                                        .padding(8)
+                                        .background(
+                                            .ultraThinMaterial,
+                                            in: Circle()
+                                        )
+                                }
+
+                                
                             }
                             .padding(.horizontal, 20)
                             .padding(.top, 10)
@@ -217,6 +233,24 @@
                 }
             }
         }
+        
+        // --- 홈으로 이동기능 구현 -----
+        // MARK: goHomeAction
+        //--------------------------
+        private func goHomeAction() {
+            
+            // 스팟이 비어 있는지 확인
+            if let travel = currentTravel {
+                if (travel.travelSpots.isEmpty ) {
+                    modelContext.delete(travel)
+                    try? modelContext.save()
+                }
+            }
+            
+            // 화면닫기
+            dismiss()
+        }
+        
         
         // MARK: - 저장된 여행 데이터 불러오기 (앱 시작 시 자동 로드)
         @MainActor
