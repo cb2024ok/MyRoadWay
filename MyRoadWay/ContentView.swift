@@ -14,6 +14,12 @@
     import simd
     import SwiftData
 
+    // MARK: --- PhotoListWrapper
+    struct PhotoListWrapper: Identifiable {
+        let id = UUID()
+        let photos: [TravelPhoto]
+    }
+
     // MARK: - 1. 여행 사진 데이터 모델
     struct TravelPhoto: Identifiable {
         let id: UUID
@@ -424,8 +430,11 @@
                     }
                 }
 
-                extracted.sort { $0.date < $1.date }
-                travelPhotos = calculate3DCoordinates(for: extracted)
+                //extracted.sort { $0.date < $1.date }
+                let combinePhotos = (travelPhotos + extracted).sorted {
+                    $0.date < $1.date
+                }
+                travelPhotos = calculate3DCoordinates(for: combinePhotos)
                 isProcessing = false
             }
         }
@@ -926,7 +935,8 @@
         @Environment(\.modelContext) private var modelContext
         
         @Binding var photos: [TravelPhoto]
-        @Binding var currentTravel: Travel? // 추가된 부분 ... 
+        
+        @Binding var currentTravel: Travel? // 추가된 부분 ...
         @State private var position: MapCameraPosition = .automatic
         
         // 현재 어떤 마커가 선택되었나 구분
@@ -935,89 +945,186 @@
         // 여행메모 제어를 위한 변수 선언..
         @State private var editingSpot: TravelSpot? = nil
         
+        @State private var clusteredPhotos: [PhotoCluster] = []
+        
+        @State private var spotErrorMessage: String? = nil
+        
+        //지도 축소.확대시 사용
+        @State private var currentSpan: MKCoordinateSpan = MKCoordinateSpan(latitudeDelta: 1.0, longitudeDelta: 1.0)
+        
+        // 선택된 클러스터의 사진들을 담을수 있는 변수
+        @State private var selectedClusterPhotos: [TravelPhoto]? = nil
+        
+        // MARK: -- ClusterInput ---
+        private struct ClusterInput: Equatable {
+            let id: UUID
+            let latitude: Double
+            let longitude: Double
+        }
+
+        private var clusterInputs: [ClusterInput] {
+            photos.map {
+                ClusterInput(
+                    id: $0.id,
+                    latitude: $0.coordinate.latitude,
+                    longitude: $0.coordinate.longitude
+                )
+            }
+        }
+
+        private func refreshClusters() {
+            // 현재 지도의 span값을 가져옴..
+            let currentSpan = self.currentSpan
+            
+            clusteredPhotos = clusterPhotos(photos, span: currentSpan)
+
+            // 선택한 사진이 더 이상 대표 사진이 아니면 선택 해제
+            if let selectedID = selectedPhotoID,
+               !clusteredPhotos.contains(where: {
+                   $0.representativePhoto.id == selectedID
+               }) {
+                selectedPhotoID = nil
+            }
+        }
+        
+        private func openMemo(for photo: TravelPhoto) {
+            let targetID = photo.id
+            var descriptor = FetchDescriptor<TravelSpot>(
+                predicate: #Predicate { $0.id == targetID }
+            )
+            descriptor.fetchLimit = 1
+
+            do {
+                if let spot = try modelContext.fetch(descriptor).first {
+                    editingSpot = spot
+                    return
+                }
+
+                // 이 앱에서 여행 소속이 필수라는 정책일 때 사용
+                guard let travel = currentTravel else {
+                    spotErrorMessage = "먼저 여행을 선택해 주세요."
+                    return
+                }
+
+                let newSpot = TravelSpot(
+                    id: photo.id,
+                    createdAt: Date(),
+                    latitude: photo.coordinate.latitude,
+                    longitude: photo.coordinate.longitude,
+                    takenAt: photo.date,
+                    memo: photo.memo,
+                    imageFileName: "\(photo.id.uuidString).jpg"
+                )
+
+                modelContext.insert(newSpot)
+                travel.travelSpots.append(newSpot)
+                editingSpot = newSpot
+
+            } catch {
+                spotErrorMessage =
+                    "여행 메모를 불러오지 못했습니다: \(error.localizedDescription)"
+            }
+        }
+        
+        //-------------------------------------------------
+        
         var body: some View {
             Map(position: $position) {
-                ForEach(Array(photos.enumerated()), id: \.element.id) {
- index,
- photo in
-                    Annotation("스팟 \(index + 1)", coordinate: photo.coordinate) {
-                        
-                        VStack(spacing: 8) {
+                // 3. photos 대신 clusterPhotos(photos)를 순회
+                ForEach(clusteredPhotos) { cluster in
+                            let photo = cluster.representativePhoto // 대표 사진
                             
-                            if selectedPhotoID == photo.id {
-                                    Button {
-                                        print("\(index + 1)번 메모 입력창 열기")
-                                        
-                                        let targetID = photo.id
-                                        
-                                        // 1. 고유 UUID로 일치하는 TravelSpot 찾기 (동일한 초에 찍힌 사진도 완벽 분리)
-                                        let fetchDescriptor = FetchDescriptor<TravelSpot>(
-                                            predicate: #Predicate {
-                                                $0.id == targetID
-                                            }
-                                        )
-                                        
-                                        if let spot = try? modelContext.fetch(fetchDescriptor).first {
-                                            editingSpot = spot
-                                        } else {
-                                            let newSpot = TravelSpot(
-                                                id: photo.id,
-                                                createdAt: Date(),
-                                                latitude: photo.coordinate.latitude,
-                                                longitude: photo.coordinate.longitude,
-                                                takenAt: photo.date,
-                                                memo: photo.memo,
-                                                imageFileName: "\(photo.id.uuidString).jpg"
-                                            )
-                                            modelContext.insert(newSpot)
-                                            currentTravel?.travelSpots.append(newSpot) // 양방향 관계 생성...
-                                            editingSpot = newSpot
-                                        }
-                                        
-                                    } label: {
-                                        Text("여행메모 📝")
-                                            .font(.caption)
-                                            .fontWeight(.bold)
-                                            .padding(.horizontal, 10)
-                                            .padding(.vertical, 6)
-                                            .background(Color.blue)
-                                            .foregroundColor(.white)
-                                            .clipShape(Capsule())
-                                            .shadow(radius: 3)
-                                    }
-                            }
-                            
-                            ZStack
-                            {
-                                RoundedRectangle(cornerRadius: 8)
-                                    .fill(Color.white)
-                                    .frame(width: 44, height: 50)
-                                    .shadow(radius: 4)
-                                
-                                Image(uiImage: photo.image)
-                                    .resizable()
-                                    .scaledToFill()
-                                    .frame(width: 38, height: 38)
-                                    .clipped()
-                                    .cornerRadius(6)
-                                    .offset(y: -3)
-                            }.onTapGesture {
-                                // MARK: 여행메모 기능추가..
-                                withAnimation(.spring()) {
+                            Annotation("스팟", coordinate: cluster.coordinate) {
+                                VStack(spacing: 8) {
+                                    
                                     if selectedPhotoID == photo.id {
-                                        selectedPhotoID = nil
-                                    } else {
-                                        selectedPhotoID = photo.id
+                                        Button {
+                                            /*let targetID = photo.id
+                                            let fetchDescriptor = FetchDescriptor<TravelSpot>(
+                                                predicate: #Predicate { $0.id == targetID }
+                                            )
+                                            
+                                            if let spot = try? modelContext.fetch(fetchDescriptor).first {
+                                                editingSpot = spot
+                                            } else {
+                                                let newSpot = TravelSpot(
+                                                    id: photo.id,
+                                                    createdAt: Date(),
+                                                    latitude: photo.coordinate.latitude,
+                                                    longitude: photo.coordinate.longitude,
+                                                    takenAt: photo.date,
+                                                    memo: photo.memo,
+                                                    imageFileName: "\(photo.id.uuidString).jpg"
+                                                )
+                                                modelContext.insert(newSpot)
+                                                currentTravel?.travelSpots.append(newSpot)
+                                                editingSpot = newSpot
+                                            }*/
+                                            
+                                            openMemo(for: photo)
+                                        } label: {
+                                            Text("여행메모 📝")
+                                                .font(.caption)
+                                                .fontWeight(.bold)
+                                                .padding(.horizontal, 10)
+                                                .padding(.vertical, 6)
+                                                .background(Color.blue)
+                                                .foregroundColor(.white)
+                                                .clipShape(Capsule())
+                                                .shadow(radius: 3)
+                                        }
+                                    }
+                                        
+                                    
+                                    ZStack {
+                                        RoundedRectangle(cornerRadius: 8)
+                                            .fill(Color.white)
+                                            .frame(width: 44, height: 50)
+                                            .shadow(radius: 4)
+                                        
+                                        Image(uiImage: photo.image)
+                                            .resizable()
+                                            .scaledToFill()
+                                            .frame(width: 38, height: 38)
+                                            .clipped()
+                                            .cornerRadius(6)
+                                            .offset(y: -3)
+                                        
+                                        // 4. 사진이 2장 이상일 때 우측 상단에 개수 표시
+                                        
+                                        if cluster.photos.count > 1 {
+                                            Text("\(cluster.photos.count)")
+                                                .font(.caption2.bold())
+                                                .foregroundColor(.white)
+                                                .padding(5)
+                                                .background(Color.red)
+                                                .clipShape(Circle())
+                                                .offset(x: 18, y: -22)
+                                        }
+                                    }
+                                    .onTapGesture {
+                                        withAnimation(.spring()) {
+                                            if selectedPhotoID == photo.id {
+                                                selectedPhotoID = nil
+                                            } else {
+                                                selectedPhotoID = photo.id
+                                            }
+                                        }
+                                    }
+                                    .onLongPressGesture {
+                                        if cluster.photos.count > 1 {
+                                            // 햅틱기능 enable.
+                                            UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+                                            //사진 리스트 보이기..
+                                            selectedClusterPhotos = cluster.photos
+                                        }
                                     }
                                 }
-                                
                             }
                         }
+                        MapPolyline(coordinates: photos.map { $0.coordinate })
+                            .stroke(Color.cyan, lineWidth: 3)
                     }
-                }
-                MapPolyline(coordinates: photos.map { $0.coordinate })
-                    .stroke(Color.cyan, lineWidth: 3)
-            }
             .mapStyle(.hybrid(elevation: .realistic))
             .sheet(item: $editingSpot) { spot in
                 MemoEditorView(spot: spot) { updatedText in
@@ -1027,6 +1134,57 @@
                     }
                     editingSpot = nil
                 }
+            }
+            // 👇 [여기부터 추가] 겹쳐진 사진 리스트를 보여줄 시트
+            .sheet(item: Binding(
+                           get: { selectedClusterPhotos.map { PhotoListWrapper(photos: $0) } },
+                           set: { selectedClusterPhotos = $0?.photos }
+                       )) { wrapper in
+                           NavigationStack {
+                               ScrollView(.horizontal, showsIndicators: false) {
+                                   HStack(spacing: 15) {
+                                       ForEach(wrapper.photos) { photo in
+                                           VStack {
+                                               Image(uiImage: photo.image)
+                                                   .resizable()
+                                                   .scaledToFill()
+                                                   .frame(width: 120, height: 120)
+                                                   .clipShape(RoundedRectangle(cornerRadius: 10))
+                                               
+                                               Text(photo.date.formatted(date: .abbreviated, time: .shortened))
+                                                   .font(.caption)
+                                                   .foregroundColor(.gray)
+                                           }
+                                       }
+                                   }
+                                   .padding()
+                               }
+                               .navigationTitle("이 위치의 사진들 (\(wrapper.photos.count)장)")
+                               .navigationBarTitleDisplayMode(.inline)
+                           }
+                           .presentationDetents([.height(220)])
+                }
+                // 👆 [여기까지 추가]
+            .onChange(of: clusterInputs, initial: true) {
+                // 페리 제안대로 추가
+                refreshClusters()
+            }
+            .alert(
+                "여행 메모 오류",
+                isPresented: Binding(
+                    get: { spotErrorMessage != nil },
+                    set: { if !$0 { spotErrorMessage = nil } }
+                )
+            ) {
+                Button("확인", role: .cancel) {
+                    spotErrorMessage = nil
+                }
+            } message: {
+                Text(spotErrorMessage ?? "")
+            }
+            .onMapCameraChange { context in
+                currentSpan = context.region.span
+                refreshClusters()
             }
         }
     }
