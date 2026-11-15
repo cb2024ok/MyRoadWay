@@ -299,14 +299,21 @@
         private func loadSavedSpots() {
             guard travelPhotos.isEmpty, !isProcessing else { return }
             
-            let descriptor = FetchDescriptor<Travel>(
-                sortBy: [SortDescriptor(\.createdAt, order: .reverse)]
-            )
-             guard let latestTravel = try? modelContext.fetch(descriptor).first else { return }
-            currentTravel = latestTravel  // ✅ currentTravel 복원
-            let spots = latestTravel.travelSpots.sorted { $0.takenAt < $1.takenAt }
+            // 1. TravelView에서 넘겨받은 currentTravel이 있으면 우선 사용
+            let targetTravel: Travel?
+            if let existing = currentTravel {
+                targetTravel = existing
+            } else {
+                let descriptor = FetchDescriptor<Travel>(
+                    sortBy: [SortDescriptor(\.createdAt, order: .reverse)]
+                )
+                targetTravel = try? modelContext.fetch(descriptor).first
+                currentTravel = targetTravel
+            }
+            
+            guard let activeTravel = targetTravel else { return }
+            let spots = activeTravel.travelSpots.sorted { $0.takenAt < $1.takenAt }
             guard !spots.isEmpty else { return }
-            //guard let spots = spots, !spots.isEmpty else { return }
             
             var loaded: [TravelPhoto] = []
             for spot in spots {
