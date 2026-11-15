@@ -24,6 +24,15 @@ struct TravelView: View {
     // 저장된 여행 목록을 Load..
     @Query(sort: \Travel.createdAt, order: .reverse) private var travels: [Travel]
     
+    // 제목수정을 위한 변수추가
+    @State private var editingTravel: Travel? = nil
+    @State private var newTitle: String = ""
+    @State private var titleSaveError: String?
+    
+    private var trimmedTitle: String {
+        newTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+    
     var body: some View {
         
         NavigationStack {
@@ -49,6 +58,18 @@ struct TravelView: View {
                                 .foregroundColor(.gray)
                         }
                     }
+                    
+                    // 제목수정처리..
+                    Button {
+                            editingTravel = travel
+                            newTitle = travel.title
+                        } label: {
+                            Image(systemName: "pencil.circle.fill")
+                                .font(.title3)
+                        }
+                        .buttonStyle(.borderless)
+                        .accessibilityLabel("여행제목 수정")
+                        
                 }
                 .onDelete { deleteIdx in
                     deleteTravels(at: deleteIdx)
@@ -58,7 +79,41 @@ struct TravelView: View {
                 ContentView(currentTravel: travel)
             })
             .navigationTitle("My Road Way")
-        
+            // 제목수정 Alert
+            .alert("여행 제목 수정", isPresented: Binding(
+                get: { editingTravel != nil },
+                set: { if !$0 { editingTravel = nil}}
+            )) {
+                TextField("새로운 제목",text: $newTitle)
+                Button("취소",role: .cancel) {}
+                Button("저장") {
+                    guard let travel = editingTravel else { return }
+                    
+                    let title = trimmedTitle
+                    guard !title.isEmpty else { return }
+            
+                   do {
+                        travel.title = title
+                        try context.save()
+                        titleSaveError = nil
+                   } catch {
+                       titleSaveError = "제목을 저장하지 못했습니다. 다시 시도해 주세요"
+                   }
+                }.disabled(trimmedTitle.isEmpty)
+            } message: {
+                Text("이 여행의 새로운 제목을 입력해 주세요")
+            }
+            .alert(
+                "저장 실패",
+                isPresented: Binding(
+                    get: { titleSaveError != nil },
+                    set: { if !$0 { titleSaveError = nil } }
+                )
+            ) {
+                Button("확인", role: .cancel) {}
+            } message: {
+                Text(titleSaveError ?? "제목을 저장하지 못했습니다.")
+            }
         }
     }
     
