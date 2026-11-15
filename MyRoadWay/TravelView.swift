@@ -57,19 +57,21 @@ struct TravelView: View {
                                 .font(.caption)
                                 .foregroundColor(.gray)
                         }
-                    }
-                    
-                    // 제목수정처리..
-                    Button {
-                            editingTravel = travel
-                            newTitle = travel.title
-                        } label: {
-                            Image(systemName: "pencil.circle.fill")
-                                .font(.title3)
-                        }
-                        .buttonStyle(.borderless)
-                        .accessibilityLabel("여행제목 수정")
                         
+                        Spacer()
+                        
+                        // 제목수정처리..
+                        Button {
+                                editingTravel = travel
+                                newTitle = travel.title
+                            } label: {
+                                Image(systemName: "pencil.circle.fill")
+                                    .font(.title3)
+                            }
+                            .buttonStyle(.borderless)
+                            .accessibilityLabel("여행제목 수정")
+                        
+                    }
                 }
                 .onDelete { deleteIdx in
                     deleteTravels(at: deleteIdx)
